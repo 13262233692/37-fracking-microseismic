@@ -4,8 +4,9 @@ import numpy as np
 from datetime import datetime, timedelta
 from typing import Optional
 import database as db
-from models import Station, MicroseismicEvent, PArrival, FilterParams
+from models import Station, MicroseismicEvent, PArrival, FilterParams, FocalMechanism
 from waveform_processor import butterworth_bandpass, pick_p_arrival
+from focal_mechanism import solve_focal_mechanism_grid_search, _predict_polarity
 
 
 class WaveformRingBuffer:
@@ -196,6 +197,9 @@ class Simulator:
         event_depth = np.random.uniform(1.0, 4.0)
         magnitude = np.random.uniform(-1.0, 1.0)
         amplitude_scale = 10 ** (magnitude * 0.5 + 1.0) * 20.0
+        true_strike = float(np.random.uniform(0, 360))
+        true_dip = float(np.random.uniform(30, 80))
+        true_rake = float(np.random.choice([-90, 0, 90, 180, -180]))
         event = MicroseismicEvent(
             origin_time=event_time,
             latitude=event_lat,
@@ -223,10 +227,21 @@ class Simulator:
             depth_diff = event_depth - (-station.elevation / 1000.0)
             total_dist = np.sqrt(dist_km ** 2 + depth_diff ** 2)
             travel_time = total_dist / (self._vp / 1000.0)
+            hdist_km = dist_km
+            theta_rad = np.arctan2(hdist_km, depth_diff)
+            takeoff = float(np.degrees(theta_rad))
+            dlat = station.latitude - event_lat
+            dlon = station.longitude - event_lon
+            azimuth = float(np.degrees(np.arctan2(dlon, dlat)))
+            if azimuth < 0:
+                azimuth += 360.0
+            true_polarity = _predict_polarity(true_strike, true_dip, true_rake, takeoff, azimuth)
             for ch_idx, ch in enumerate(["Z", "N", "E"]):
                 wavelet = self._ricker_wavelet(wavelet_samples, peak_freq=np.random.uniform(20, 60))
                 phase_shift = ch_idx * np.pi / 6
                 rotated = wavelet * np.cos(phase_shift) * amplitude_scale
+                if ch == "Z" and true_polarity != 0:
+                    rotated = rotated * float(true_polarity)
                 attenuation = 1.0 / max(1.0, dist_km * 0.3)
                 signal = rotated * attenuation
                 noise = np.random.normal(0, 0.1, total_samples)
@@ -253,6 +268,15 @@ class Simulator:
                     )
                     for pick_time_s, snr, sta_lta_ratio, confidence in picks:
                         actual_pick = event_time + timedelta(seconds=travel_time - pre_noise_duration + pick_time_s)
+                        pick_idx = int(pick_time_s * self.ring_buffer.fs)
+                        pick_idx = max(0, min(pick_idx, len(filtered) - 1))
+                        post_window = filtered[pick_idx:min(pick_idx + 10, len(filtered))]
+                        if len(post_window) > 2:
+                            slope = float(np.mean(post_window[:3]))
+                            waveform_polarity = 1 if slope > 0 else (-1 if slope < 0 else 0)
+                        else:
+                            waveform_polarity = 0
+                        final_polarity = int(waveform_polarity if waveform_polarity != 0 else true_polarity)
                         arrival = PArrival(
                             station_id=station.id,
                             event_id=event_id,
@@ -261,6 +285,7 @@ class Simulator:
                             sta_lta_ratio=sta_lta_ratio,
                             confidence=confidence,
                             channel=ch,
+                            polarity=final_polarity,
                         )
                         arrival_id = await db.insert_arrival(arrival)
                         arrival.id = arrival_id
@@ -273,6 +298,12 @@ class Simulator:
                                 pass
         if arrivals_detected > 0:
             await db.update_event_arrivals(event_id, arrivals_detected)
+        if arrivals_detected >= 6:
+            arrivals_all = await db.get_arrivals(event_id=event_id)
+            focal = solve_focal_mechanism_grid_search(event, arrivals_all, self._stations)
+            if focal is not None:
+                event.focal = focal
+                await db.update_event_focal(event_id, focal)
         if self._arrival_count_since_tomo >= self._tomo_trigger_threshold:
             self._arrival_count_since_tomo = 0
             if self._tomo_callback:

@@ -7,6 +7,7 @@ import type {
   TomographyResult,
   FilterParams,
   TomographyParams,
+  EventWithFocal,
 } from '@/types';
 
 const API_BASE = 'http://localhost:8000/api';
@@ -20,10 +21,12 @@ interface AppState {
   filterParams: FilterParams;
   tomoParams: TomographyParams;
   lastTomographyResult: TomographyResult | null;
+  eventFocalMap: Record<number, EventWithFocal>;
 
   fetchStations: () => Promise<void>;
   fetchEvents: () => Promise<void>;
   fetchArrivals: () => Promise<void>;
+  fetchAllFocal: () => Promise<void>;
   updateFilterParams: (params: FilterParams) => Promise<void>;
   startTomography: (params: TomographyParams) => Promise<void>;
   stopTomography: () => Promise<void>;
@@ -39,6 +42,7 @@ export const useAppStore = create<AppState>((set) => ({
   filterParams: { freq_low: 20, freq_high: 200, order: 4 },
   tomoParams: {
     damping: 0.05,
+    smoothness_weight: 0.1,
     max_iter: 50,
     grid_nx: 20,
     grid_ny: 20,
@@ -51,6 +55,7 @@ export const useAppStore = create<AppState>((set) => ({
     spacing_depth: 0.1,
   },
   lastTomographyResult: null,
+  eventFocalMap: {},
 
   fetchStations: async () => {
     try {
@@ -69,6 +74,22 @@ export const useAppStore = create<AppState>((set) => ({
       set({ events: data });
     } catch {
       console.error('Failed to fetch events');
+    }
+  },
+
+  fetchAllFocal: async () => {
+    try {
+      const res = await fetch(`${API_BASE}/focal`);
+      if (res.ok) {
+        const data: EventWithFocal[] = await res.json();
+        const map: Record<number, EventWithFocal> = {};
+        for (const item of data) {
+          map[item.event_id] = item;
+        }
+        set({ eventFocalMap: map });
+      }
+    } catch {
+      console.error('Failed to fetch focal mechanisms');
     }
   },
 

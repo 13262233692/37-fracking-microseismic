@@ -34,6 +34,20 @@ class PArrival(BaseModel):
     sta_lta_ratio: float
     confidence: float
     channel: str = "Z"
+    polarity: int = 0
+
+
+class FocalMechanism(BaseModel):
+    event_id: int
+    strike: float
+    dip: float
+    rake: float
+    strike_aux: float
+    dip_aux: float
+    rake_aux: float
+    polarity_misfit: float
+    used_polarities: int
+    beachball_svg: str
 
 
 class MicroseismicEvent(BaseModel):
@@ -45,6 +59,7 @@ class MicroseismicEvent(BaseModel):
     depth_km: float
     magnitude: float
     num_arrivals: int = 0
+    focal: Optional[FocalMechanism] = None
 
 
 class TomographyResult(BaseModel):
@@ -83,10 +98,11 @@ class FilterParams(BaseModel):
 
 class TomographyParams(BaseModel):
     damping: float = Field(default=0.05, ge=0.001, le=10.0)
-    max_iter: int = Field(default=50, ge=5, le=200)
-    grid_nx: int = Field(default=20, ge=5, le=100)
-    grid_ny: int = Field(default=20, ge=5, le=100)
-    grid_nz: int = Field(default=20, ge=5, le=100)
+    smoothness_weight: float = Field(default=0.1, ge=0.0, le=100.0)
+    max_iter: int = Field(default=50, ge=5, le=500)
+    grid_nx: int = Field(default=20, ge=5, le=500)
+    grid_ny: int = Field(default=20, ge=5, le=500)
+    grid_nz: int = Field(default=20, ge=5, le=500)
     origin_lat: float = Field(default=29.5)
     origin_lon: float = Field(default=104.5)
     origin_depth: float = Field(default=0.0)

@@ -25,6 +25,20 @@ export interface PArrival {
   sta_lta_ratio: number;
   confidence: number;
   channel: string;
+  polarity?: number;
+}
+
+export interface FocalMechanism {
+  event_id: number;
+  strike: number;
+  dip: number;
+  rake: number;
+  strike_aux: number;
+  dip_aux: number;
+  rake_aux: number;
+  polarity_misfit: number;
+  used_polarities: number;
+  beachball_svg: string;
 }
 
 export interface MicroseismicEvent {
@@ -35,6 +49,17 @@ export interface MicroseismicEvent {
   depth_km: number;
   magnitude: number;
   num_arrivals: number;
+  focal?: FocalMechanism | null;
+}
+
+export interface EventWithFocal {
+  event_id: number;
+  latitude: number;
+  longitude: number;
+  depth_km: number;
+  magnitude: number;
+  origin_time: string;
+  focal: FocalMechanism;
 }
 
 export interface TomographyResult {
@@ -65,6 +90,7 @@ export interface FilterParams {
 
 export interface TomographyParams {
   damping: number;
+  smoothness_weight: number;
   max_iter: number;
   grid_nx: number;
   grid_ny: number;

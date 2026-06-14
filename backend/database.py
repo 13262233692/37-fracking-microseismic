@@ -3,7 +3,7 @@ import aiosqlite
 import json
 from datetime import datetime
 from typing import Optional
-from models import Station, MicroseismicEvent, PArrival, TomographyResult, TomographyEvent
+from models import Station, MicroseismicEvent, PArrival, TomographyResult, TomographyEvent, FocalMechanism
 
 DB_PATH = "microseismic.db"
 
@@ -40,7 +40,25 @@ CREATE TABLE IF NOT EXISTS p_arrival (
     sta_lta_ratio REAL NOT NULL,
     confidence REAL NOT NULL,
     channel TEXT DEFAULT 'Z',
+    polarity INTEGER DEFAULT 0,
     FOREIGN KEY (station_id) REFERENCES station(id),
+    FOREIGN KEY (event_id) REFERENCES microseismic_event(id)
+)
+"""
+
+CREATE_FOCAL_MECHANISM = """
+CREATE TABLE IF NOT EXISTS focal_mechanism (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id INTEGER NOT NULL UNIQUE,
+    strike REAL NOT NULL,
+    dip REAL NOT NULL,
+    rake REAL NOT NULL,
+    aux_strike REAL,
+    aux_dip REAL,
+    aux_rake REAL,
+    polarity_misfit REAL,
+    used_polarities INTEGER,
+    beachball_svg TEXT,
     FOREIGN KEY (event_id) REFERENCES microseismic_event(id)
 )
 """
@@ -94,8 +112,13 @@ async def init_db() -> None:
         await db.executescript(CREATE_STATION)
         await db.executescript(CREATE_MICROSEISMIC_EVENT)
         await db.executescript(CREATE_P_ARRIVAL)
+        await db.executescript(CREATE_FOCAL_MECHANISM)
         await db.executescript(CREATE_TOMOGRAPHY_RESULT)
         await db.executescript(CREATE_TOMOGRAPHY_EVENT)
+        try:
+            await db.execute("ALTER TABLE p_arrival ADD COLUMN polarity INTEGER DEFAULT 0")
+        except aiosqlite.OperationalError:
+            pass
         cursor = await db.execute("SELECT COUNT(*) FROM station")
         row = await cursor.fetchone()
         if row[0] == 0:
@@ -180,11 +203,73 @@ async def update_event_arrivals(event_id: int, num_arrivals: int) -> None:
 async def insert_arrival(arrival: PArrival) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
-            "INSERT INTO p_arrival (station_id, event_id, pick_time, snr, sta_lta_ratio, confidence, channel) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (arrival.station_id, arrival.event_id, arrival.pick_time.isoformat(), arrival.snr, arrival.sta_lta_ratio, arrival.confidence, arrival.channel),
+            "INSERT INTO p_arrival (station_id, event_id, pick_time, snr, sta_lta_ratio, confidence, channel, polarity) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (arrival.station_id, arrival.event_id, arrival.pick_time.isoformat(), arrival.snr, arrival.sta_lta_ratio, arrival.confidence, arrival.channel, getattr(arrival, 'polarity', 0)),
         )
         await db.commit()
         return cursor.lastrowid
+
+
+async def update_event_focal(event_id: int, focal: FocalMechanism) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """INSERT INTO focal_mechanism (event_id, strike, dip, rake, aux_strike, aux_dip, aux_rake, polarity_misfit, used_polarities, beachball_svg)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(event_id) DO UPDATE SET
+                 strike=excluded.strike, dip=excluded.dip, rake=excluded.rake,
+                 aux_strike=excluded.aux_strike, aux_dip=excluded.aux_dip, aux_rake=excluded.aux_rake,
+                 polarity_misfit=excluded.polarity_misfit, used_polarities=excluded.used_polarities, beachball_svg=excluded.beachball_svg""",
+            (event_id, focal.strike, focal.dip, focal.rake,
+             getattr(focal, 'strike_aux', None), getattr(focal, 'dip_aux', None), getattr(focal, 'rake_aux', None),
+             focal.polarity_misfit, focal.used_polarities, focal.beachball_svg),
+        )
+        await db.commit()
+
+
+async def get_event_focal(event_id: int) -> Optional[FocalMechanism]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT * FROM focal_mechanism WHERE event_id = ?", (event_id,))
+        row = await cursor.fetchone()
+        if row is None:
+            return None
+        d = dict(row)
+        return FocalMechanism(
+            event_id=event_id,
+            strike=d["strike"],
+            dip=d["dip"],
+            rake=d["rake"],
+            strike_aux=d.get("aux_strike", 0.0) if d.get("aux_strike") is not None else 0.0,
+            dip_aux=d.get("aux_dip", 0.0) if d.get("aux_dip") is not None else 0.0,
+            rake_aux=d.get("aux_rake", 0.0) if d.get("aux_rake") is not None else 0.0,
+            polarity_misfit=d.get("polarity_misfit", 0.0),
+            used_polarities=d.get("used_polarities", 0),
+            beachball_svg=d.get("beachball_svg", ""),
+        )
+
+
+async def get_all_focal() -> list[tuple[int, FocalMechanism]]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT * FROM focal_mechanism ORDER BY id DESC")
+        rows = await cursor.fetchall()
+        result = []
+        for row in rows:
+            d = dict(row)
+            fm = FocalMechanism(
+                event_id=d["event_id"],
+                strike=d["strike"],
+                dip=d["dip"],
+                rake=d["rake"],
+                strike_aux=d.get("aux_strike", 0.0) if d.get("aux_strike") is not None else 0.0,
+                dip_aux=d.get("aux_dip", 0.0) if d.get("aux_dip") is not None else 0.0,
+                rake_aux=d.get("aux_rake", 0.0) if d.get("aux_rake") is not None else 0.0,
+                polarity_misfit=d.get("polarity_misfit", 0.0),
+                used_polarities=d.get("used_polarities", 0),
+                beachball_svg=d.get("beachball_svg", ""),
+            )
+            result.append((d["event_id"], fm))
+        return result
 
 
 async def get_arrivals(station_id: Optional[str] = None, event_id: Optional[int] = None) -> list[PArrival]:
